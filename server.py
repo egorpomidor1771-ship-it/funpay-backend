@@ -196,3 +196,13 @@ def update_step(deal_id: str, data: UpdateStep):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+@app.delete("/deals/{deal_id}")
+def delete_deal(deal_id: str):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM deals WHERE id = ?", (deal_id,))
+    conn.commit()
+    conn.close()
+    return {"ok": True}
