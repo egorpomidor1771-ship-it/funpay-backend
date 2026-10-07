@@ -38,6 +38,18 @@ def init_db():
             creator_role TEXT
         )
     """)
+    c.execute("""
+        CREATE TABLE IF NOT EXISTS reviews (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            rating INTEGER,
+            nickname TEXT,
+            gift TEXT,
+            text TEXT,
+            tg_id INTEGER,
+            published INTEGER DEFAULT 1,
+            created_at TEXT
+        )
+    """)
     conn.commit()
     conn.close()
 
@@ -62,6 +74,14 @@ class UpdateStep(BaseModel):
     step: int
 
 
+class CreateReview(BaseModel):
+    rating: int
+    nickname: str
+    gift: str
+    text: str
+    tg_id: int
+
+
 def generate_deal_id():
     chars = string.ascii_uppercase + string.digits
     while True:
@@ -84,10 +104,19 @@ def row_to_dict(row):
     return dict(zip(keys, row))
 
 
+def review_to_dict(row):
+    if not row:
+        return None
+    keys = ['id', 'rating', 'nickname', 'gift', 'text', 'tg_id', 'published', 'created_at']
+    return dict(zip(keys, row))
+
+
 @app.get("/")
 def root():
     return {"status": "ok", "service": "FunPay Backend"}
 
+
+# ===== DEALS =====
 
 @app.post("/deals")
 def create_deal(data: CreateDeal):
@@ -169,22 +198,17 @@ def join_deal(deal_id: str, data: JoinDeal):
         if deal['seller_tg_id'] and deal['seller_tg_id'] != data.tg_id:
             conn.close()
             raise HTTPException(status_code=400, detail="Deal already has seller")
-        c.execute("""
-            UPDATE deals SET seller_username = ?, seller_tg_id = ?
-            WHERE id = ?
-        """, (data.username, data.tg_id, deal_id))
+        c.execute("UPDATE deals SET seller_username = ?, seller_tg_id = ? WHERE id = ?",
+                  (data.username, data.tg_id, deal_id))
     else:
         if deal['buyer_tg_id'] and deal['buyer_tg_id'] != data.tg_id:
             conn.close()
             raise HTTPException(status_code=400, detail="Deal already has buyer")
-        c.execute("""
-            UPDATE deals SET buyer_username = ?, buyer_tg_id = ?
-            WHERE id = ?
-        """, (data.username, data.tg_id, deal_id))
+        c.execute("UPDATE deals SET buyer_username = ?, buyer_tg_id = ? WHERE id = ?",
+                  (data.username, data.tg_id, deal_id))
 
     conn.commit()
     conn.close()
-
     return {"ok": True}
 
 
@@ -206,3 +230,75 @@ def delete_deal(deal_id: str):
     conn.commit()
     conn.close()
     return {"ok": True}
+
+
+# ===== REVIEWS =====
+
+@app.post("/reviews")
+def create_review(data: CreateReview):
+    if data.rating < 1 or data.rating > 5:
+        raise HTTPException(status_code=400, detail="Rating must be 1-5")
+
+    # Публикуем только 4 и 5 звёзд
+    published = 1 if data.rating >= 4 else 0
+    created_at = datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
+
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        INSERT INTO reviews (rating, nickname, gift, text, tg_id, published, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+    """, (data.rating, data.nickname, data.gift, data.text, data.tg_id, published, created_at))
+    conn.commit()
+    conn.close()
+
+    return {"ok": True, "published": published}
+
+
+@app.get("/reviews")
+def get_reviews():
+    """Все опубликованные отзывы + статистика."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+
+    # Опубликованные отзывы (rating >= 4)
+    c.execute("SELECT * FROM reviews WHERE published = 1 ORDER BY id DESC")
+    rows = c.fetchall()
+
+    # Статистика — по ВСЕМ отзывам (включая непоказанные)
+    c.execute("SELECT rating, COUNT(*) FROM reviews GROUP BY rating")
+    stats_raw = c.fetchall()
+    conn.close()
+
+    stats = {1: 0, 2: 0, 3: 0, 4: 0, 5: 0}
+    total = 0
+    total_sum = 0
+    for rating, count in stats_raw:
+        stats[rating] = count
+        total += count
+        total_sum += rating * count
+
+    average = round(total_sum / total, 1) if total > 0 else 0.0
+
+    return {
+        "reviews": [review_to_dict(r) for r in rows],
+        "stats": {
+            "average": average,
+            "total": total,
+            "5": stats[5],
+            "4": stats[4],
+            "3": stats[3],
+            "2": stats[2],
+            "1": stats[1]
+        }
+    }
+
+
+@app.get("/reviews/user/{tg_id}")
+def get_user_reviews(tg_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("SELECT * FROM reviews WHERE tg_id = ? ORDER BY id DESC", (tg_id,))
+    rows = c.fetchall()
+    conn.close()
+    return [review_to_dict(r) for r in rows]
