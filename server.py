@@ -9,7 +9,6 @@ from datetime import datetime
 
 app = FastAPI(title="FunPay Backend")
 
-# Разрешаем запросы с любых сайтов (нужно для Netlify)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -20,7 +19,6 @@ app.add_middleware(
 DB_PATH = "funpay.db"
 
 
-# ===== Инициализация БД =====
 def init_db():
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
@@ -46,9 +44,8 @@ def init_db():
 init_db()
 
 
-# ===== Модели =====
 class CreateDeal(BaseModel):
-    type: str              # 'buy' или 'sell'
+    type: str
     currency: str
     amount: float
     description: str
@@ -65,7 +62,6 @@ class UpdateStep(BaseModel):
     step: int
 
 
-# ===== Утилиты =====
 def generate_deal_id():
     chars = string.ascii_uppercase + string.digits
     while True:
@@ -88,8 +84,6 @@ def row_to_dict(row):
     return dict(zip(keys, row))
 
 
-# ===== Эндпоинты =====
-
 @app.get("/")
 def root():
     return {"status": "ok", "service": "FunPay Backend"}
@@ -97,11 +91,9 @@ def root():
 
 @app.post("/deals")
 def create_deal(data: CreateDeal):
-    """Создать сделку."""
     deal_id = generate_deal_id()
     created_at = datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
 
-    # Если создатель покупатель — он buyer, иначе seller
     if data.type == 'buy':
         buyer_username = data.username
         buyer_tg_id = data.tg_id
@@ -132,9 +124,22 @@ def create_deal(data: CreateDeal):
     return {"ok": True, "deal_id": deal_id}
 
 
+@app.get("/deals/user/{tg_id}")
+def get_user_deals(tg_id: int):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("""
+        SELECT * FROM deals
+        WHERE buyer_tg_id = ? OR seller_tg_id = ?
+        ORDER BY rowid DESC
+    """, (tg_id, tg_id))
+    rows = c.fetchall()
+    conn.close()
+    return [row_to_dict(r) for r in rows]
+
+
 @app.get("/deals/{deal_id}")
 def get_deal(deal_id: str):
-    """Получить данные сделки."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT * FROM deals WHERE id = ?", (deal_id,))
@@ -149,7 +154,6 @@ def get_deal(deal_id: str):
 
 @app.post("/deals/{deal_id}/join")
 def join_deal(deal_id: str, data: JoinDeal):
-    """Второй участник присоединяется к сделке."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("SELECT * FROM deals WHERE id = ?", (deal_id,))
@@ -161,7 +165,6 @@ def join_deal(deal_id: str, data: JoinDeal):
 
     deal = row_to_dict(row)
 
-    # Если создатель был покупателем — присоединяемся как продавец
     if deal['creator_role'] == 'buyer':
         if deal['seller_tg_id'] and deal['seller_tg_id'] != data.tg_id:
             conn.close()
@@ -187,7 +190,6 @@ def join_deal(deal_id: str, data: JoinDeal):
 
 @app.post("/deals/{deal_id}/step")
 def update_step(deal_id: str, data: UpdateStep):
-    """Обновить шаг сделки."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("UPDATE deals SET step = ? WHERE id = ?", (data.step, deal_id))
