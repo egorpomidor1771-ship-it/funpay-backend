@@ -1,7 +1,6 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
-from typing import Optional
 import sqlite3
 import random
 import string
@@ -82,6 +81,14 @@ class CreateReview(BaseModel):
     tg_id: int
 
 
+class SeedReview(BaseModel):
+    rating: int
+    nickname: str
+    gift: str
+    text: str
+    created_at: str
+
+
 def generate_deal_id():
     chars = string.ascii_uppercase + string.digits
     while True:
@@ -149,7 +156,6 @@ def create_deal(data: CreateDeal):
           created_at, creator_role))
     conn.commit()
     conn.close()
-
     return {"ok": True, "deal_id": deal_id}
 
 
@@ -157,11 +163,7 @@ def create_deal(data: CreateDeal):
 def get_user_deals(tg_id: int):
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("""
-        SELECT * FROM deals
-        WHERE buyer_tg_id = ? OR seller_tg_id = ?
-        ORDER BY rowid DESC
-    """, (tg_id, tg_id))
+    c.execute("SELECT * FROM deals WHERE buyer_tg_id = ? OR seller_tg_id = ? ORDER BY rowid DESC", (tg_id, tg_id))
     rows = c.fetchall()
     conn.close()
     return [row_to_dict(r) for r in rows]
@@ -174,10 +176,8 @@ def get_deal(deal_id: str):
     c.execute("SELECT * FROM deals WHERE id = ?", (deal_id,))
     row = c.fetchone()
     conn.close()
-
     if not row:
         raise HTTPException(status_code=404, detail="Deal not found")
-
     return row_to_dict(row)
 
 
@@ -187,13 +187,10 @@ def join_deal(deal_id: str, data: JoinDeal):
     c = conn.cursor()
     c.execute("SELECT * FROM deals WHERE id = ?", (deal_id,))
     row = c.fetchone()
-
     if not row:
         conn.close()
         raise HTTPException(status_code=404, detail="Deal not found")
-
     deal = row_to_dict(row)
-
     if deal['creator_role'] == 'buyer':
         if deal['seller_tg_id'] and deal['seller_tg_id'] != data.tg_id:
             conn.close()
@@ -206,7 +203,6 @@ def join_deal(deal_id: str, data: JoinDeal):
             raise HTTPException(status_code=400, detail="Deal already has buyer")
         c.execute("UPDATE deals SET buyer_username = ?, buyer_tg_id = ? WHERE id = ?",
                   (data.username, data.tg_id, deal_id))
-
     conn.commit()
     conn.close()
     return {"ok": True}
@@ -238,11 +234,8 @@ def delete_deal(deal_id: str):
 def create_review(data: CreateReview):
     if data.rating < 1 or data.rating > 5:
         raise HTTPException(status_code=400, detail="Rating must be 1-5")
-
-    # Публикуем только 4 и 5 звёзд
     published = 1 if data.rating >= 4 else 0
     created_at = datetime.now().strftime("%d.%m.%Y, %H:%M:%S")
-
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
     c.execute("""
@@ -251,21 +244,15 @@ def create_review(data: CreateReview):
     """, (data.rating, data.nickname, data.gift, data.text, data.tg_id, published, created_at))
     conn.commit()
     conn.close()
-
     return {"ok": True, "published": published}
 
 
 @app.get("/reviews")
 def get_reviews():
-    """Все опубликованные отзывы + статистика."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-
-    # Опубликованные отзывы (rating >= 4)
     c.execute("SELECT * FROM reviews WHERE published = 1 ORDER BY id DESC")
     rows = c.fetchall()
-
-    # Статистика — по ВСЕМ отзывам (включая непоказанные)
     c.execute("SELECT rating, COUNT(*) FROM reviews GROUP BY rating")
     stats_raw = c.fetchall()
     conn.close()
@@ -277,7 +264,6 @@ def get_reviews():
         stats[rating] = count
         total += count
         total_sum += rating * count
-
     average = round(total_sum / total, 1) if total > 0 else 0.0
 
     return {
@@ -285,20 +271,35 @@ def get_reviews():
         "stats": {
             "average": average,
             "total": total,
-            "5": stats[5],
-            "4": stats[4],
-            "3": stats[3],
-            "2": stats[2],
-            "1": stats[1]
+            "5": stats[5], "4": stats[4], "3": stats[3], "2": stats[2], "1": stats[1]
         }
     }
 
 
-@app.get("/reviews/user/{tg_id}")
-def get_user_reviews(tg_id: int):
+@app.post("/admin/seed-reviews")
+def seed_reviews(reviews: list[SeedReview]):
+    """Массовая заливка отзывов. Публикуются только 4-5★."""
     conn = sqlite3.connect(DB_PATH)
     c = conn.cursor()
-    c.execute("SELECT * FROM reviews WHERE tg_id = ? ORDER BY id DESC", (tg_id,))
-    rows = c.fetchall()
+    added = 0
+    for r in reviews:
+        published = 1 if r.rating >= 4 else 0
+        c.execute("""
+            INSERT INTO reviews (rating, nickname, gift, text, tg_id, published, created_at)
+            VALUES (?, ?, ?, ?, 0, ?, ?)
+        """, (r.rating, r.nickname, r.gift, r.text, published, r.created_at))
+        added += 1
+    conn.commit()
     conn.close()
-    return [review_to_dict(r) for r in rows]
+    return {"ok": True, "added": added}
+
+
+@app.delete("/admin/reviews")
+def clear_reviews():
+    """Очистить все отзывы (на случай перезаливки)."""
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute("DELETE FROM reviews")
+    conn.commit()
+    conn.close()
+    return {"ok": True}
